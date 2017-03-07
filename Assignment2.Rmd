@@ -11,6 +11,7 @@ library(hdm)
 library(ggplot2)
 library(stargazer)
 library(AER) #IV Regression
+library(nloptr)
 multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
   library(grid)
 
@@ -411,9 +412,48 @@ summaryRprof("blp.prof", lines="both") # show the results
 ```
 
 ## Problem 5: estimation
-```{r, echo=FALSE,eval=TRUE}
-
+```{r Problem 5 with opt.weight, echo=FALSE,eval=TRUE}
+Z <- as.matrix(rbind(cbind(est.data$zd,0*est.data$zs), cbind(0*est.data$zd, est.data$zs)))
+opt.weight <- solve(t(Z)%*% Z)
 obj.func <- function(alpha.sigma) { m <-moments(alpha.sigma[1],alpha.sigma[2:6],s=BLP$share,p=BLP$price,
+             x=est.data$x, log.y=est.data$log.y,
+             log.yp=est.data$log.yp,
+             dlog.yp=est.data$dlog.yp,
+             v=v.s,w=est.data$w,
+             zd=est.data$zd,
+             zs=est.data$zs,
+             # W=diag(1,nrow=(ncol(est.data$zd)+ncol(est.data$zs))),
+             W = opt.weight,
+             market.id=BLP$cdid, firm.id=BLP$firm.id)
+
+              m$obj
+}
+
+x0 <- c(est.blp$alpha,est.blp$sigma)
+obj.func(c(est.blp$alpha,est.blp$sigma))
+step.a <- nloptr(x0=x0 ,eval_f = obj.func, lb = x0 * 0.1 , opts=list(algorithm="NLOPT_LN_BOBYQA",print_level=3,tol=1e-2))
+sol <- step.a$solution
+step.b <- moments(sol[1],sol[2:6],s=BLP$share,p=BLP$price,
+             x=est.data$x, log.y=est.data$log.y,
+             log.yp=est.data$log.yp,
+             dlog.yp=est.data$dlog.yp,
+             v=v.s,w=est.data$w,
+             zd=est.data$zd,
+             zs=est.data$zs,
+             # W=diag(1,nrow=(ncol(est.data$zd)+ncol(est.data$zs))),
+             W = opt.weight,
+             market.id=BLP$cdid, firm.id=BLP$firm.id,compute.variance = TRUE)
+
+est.result.2 <- matrix(c( step.a$solution[1], step.a$solution[2:6],  step.b$beta,  step.b$gamma),nc=1)
+rownames(est.result.2) <- c("alpha",paste("sigma",c("constant","hpwt","air","mpd","space"),sep = "."),paste("beta",c("constant","hpwt","air","mpd","space"),sep = "."),paste("gamma",c("constant","hpwt","air","mpd","space","trend"),sep = "."))
+
+stargazer(est.result.2,type="text")
+
+```
+I tried to use weight matrix as the outer product of instruments. However, this result seems to be even worse. The scale of alpha is far away from the estimation.
+
+```{r, echo=FALSE,eval=TRUE}
+obj.func <- function(alpha.sigma) {  m<-moments(alpha.sigma[1],alpha.sigma[2:6],s=BLP$share,p=BLP$price,
              x=est.data$x, log.y=est.data$log.y,
              log.yp=est.data$log.yp,
              dlog.yp=est.data$dlog.yp,
@@ -426,10 +466,11 @@ obj.func <- function(alpha.sigma) { m <-moments(alpha.sigma[1],alpha.sigma[2:6],
 
               m$obj
 }
-library(nloptr)
+
 x0 <- c(est.blp$alpha,est.blp$sigma)
 obj.func(c(est.blp$alpha,est.blp$sigma))
-step.a <- nloptr(x0=x0 ,eval_f = obj.func, lb = x0 * 0.1 , opts=list(algorithm="NLOPT_LN_BOBYQA",print_level=3,tol=1e-2))
+step.a <- nloptr(x0=x0 ,eval_f = obj.func, lb = x0 * 0.1 , opts=list(algorithm="NLOPT_LN_BOBYQA",tol=1e-2)) #print_level=3 ( use for printing each step)
+sol <- step.a$solution
 step.b <- moments(sol[1],sol[2:6],s=BLP$share,p=BLP$price,
              x=est.data$x, log.y=est.data$log.y,
              log.yp=est.data$log.yp,
@@ -451,27 +492,96 @@ stargazer(est.result.1,type="text")
 ```
 Compare to table IV in the BLP paper, the sign mostly agrees for beta. This implies that the demand side is correctly estimated. However, the supply side is not similar to the paper. The signs of gamma does not aggree.
 
-```{r Problem 5 with opt.weight, echo=FALSE,eval=FALSE}
-Z <- as.matrix(rbind(cbind(est.data$zd,0*est.data$zs), cbind(0*est.data$zd, est.data$zs)))
-opt.weight <- solve(t(Z)%*% Z)
-obj.func <- function(alpha.sigma) { m <-moments(alpha.sigma[1],alpha.sigma[2:6],s=BLP$share,p=BLP$price,
-             x=est.data$x, log.y=est.data$log.y,
-             log.yp=est.data$log.yp,
-             dlog.yp=est.data$dlog.yp,
-             v=v.s,w=est.data$w,
-             zd=est.data$zd,
-             zs=est.data$zs,
-             # W=diag(1,nrow=(ncol(est.data$zd)+ncol(est.data$zs))),
-             W = opt.weight,
-             market.id=BLP$cdid, firm.id=BLP$firm.id)
 
-              m$obj
+## Problem 6:
+
+The standard error for betas and gammas are calculated in previous question. The code is added to the moment function. Since the estimation is using GMM, the variance matrix can be obtained using analytical form.
+My standard error for beta and gamma does not deviate too much from the BLP paper. 
+
+For the variance of alpha and sigmas, using the fact that betas and gammas are function of alpha_sigmas. By applying the delta method, we can then solve for the variance.
+```{r alpha sigma variance,echo=FALSE}
+
+delta.dr <- function(delta,  ## J vector
+                     x,      ## J by K
+                     log.y,  ## S vector of log(y_i)
+                     log.yp, ## S by J of log(y_i - p_j) 
+                     v,      ## S by K
+                     alpha,  ## scalar
+                     sigma)  ## K vector
+  {
+  J <- length(delta)
+  S <- length(log.y)
+  K <- length(sigma)
+  # exp.delta <- matrix(0,nr=J,nc=S)
+  delta.dr <- matrix(0,nr=J,nc=K+1)
+  for (i in 1:S){
+    each.log.yp <- log.yp[i,]
+    share.each <-  exp(x %*% (sigma * v[i,]) + delta + alpha * log.yp[i,]) #J by 1 
+    share.each <- share.each / (sum(share.each) + exp(alpha*log.y[i])) #J by 1
+    delta.dr[,1]  <- delta.dr[,1] + share.each * ( each.log.yp - sum(share.each * each.log.yp))
+    svx <-  (share.each ) %*% t(v[i,]) * x #J by K
+    delta.dr[,2:(K+1)] <- svx - share.each  %*% t(apply(svx,2,sum) )
+  }
+  delta.dr <- delta.dr / S
+  
+  # stop("TODO: compute J vector of shares in this market")
+  return(delta.dr)
 }
 
-x0 <- c(est.blp$alpha,est.blp$sigma)
-obj.func(c(est.blp$alpha,est.blp$sigma))
-step.a <- nloptr(x0=x0 ,eval_f = obj.func, lb = x0 * 0.1 , opts=list(algorithm="NLOPT_LN_BOBYQA",print_level=3,tol=1e-2))
-step.b <- moments(sol[1],sol[2:6],s=BLP$share,p=BLP$price,
+
+alpha.sigma.variance <- function(alpha,sigma, s,p,x,log.yp, log.y,dlog.yp,
+                    v,w,zd,zs, W,
+                    market.id,firm.id, var)
+{
+  ## Find delta and omega for each market
+  delta.derivative <- matrix(0,nr=length(s),nc=dim(x)[2]+1)
+  omega.derivative <- matrix(0,nr=length(s),nc=dim(x)[2]+1)
+  delta <- rep(NA, length(s))
+  omega <- rep(NA, length(s))
+  for (t in unique(market.id)) {
+    inc <- market.id==t
+    delta.derivative[inc,] <-  delta.dr(s[inc], x[inc,],drop(log.y[t,]),
+                           log.yp[[t]] ,
+                           v=drop(v[t,,]),
+                           alpha,sigma)
+    delta.each <-  delta.fn(s[inc], x[inc,],drop(log.y[t,]),
+                           log.yp[[t]] ,
+                           v=drop(v[t,,]),
+                           alpha,sigma, tol=1e-2,
+                           tol.s=1e-6, max.iter=1000)
+    delta[inc] <- delta.each
+    dShare <- dshare.dp(delta.each, x[inc,], drop(log.y[t,]),
+                        log.yp[[t]], dlog.yp[[t]] , drop(v[t,,]), alpha,sigma)
+    dShare <- dShare* outer(firm.id[inc],firm.id[inc],
+                            function(x,y) x==y)
+    trans <- solve(dShare)
+    
+    b <-  trans %*% s[inc]
+    omega[inc] <- log(p[inc]-b)
+    for (k in 1:(dim(x)[2]+1)){
+      each.dr <- diag(delta.derivative[inc,k])
+      # omega.derivative[inc,k] <- diag(as.vector(1 / (p[inc]-b)))  %*% trans %*% each.dr %*% dShare %*% t(trans) %*% s[inc]
+      omega.derivative[inc,k] <- diag(as.vector(1 / (p[inc]-b)))  %*% each.dr %*% dShare %*% s[inc]
+    }
+
+  }
+    B.dr <- rbind(delta.derivative,omega.derivative)
+    X <- as.matrix(rbind(cbind(x,0*w), cbind(0*x,w)))
+    Y <- c(delta, omega)
+    Z <- as.matrix(rbind(cbind(zd,0*zs), cbind(0*zd, zs)))
+    XZ <- t(X) %*% Z 
+    M.B <- solve(XZ %*% W %*% t(XZ)) %*%
+    (XZ  %*% W %*% t(Z))
+    alpha.sigma.var <- t(M.B %*% B.dr) %*% var %*% (M.B %*% B.dr)
+  
+}
+
+```
+
+```{r Problem 6, echo=FALSE}
+var <- step.b$var # get the variance co-variance matrix.
+
+alpha.sigma.var <- alpha.sigma.variance(sol[1],sol[2:6],s=BLP$share,p=BLP$price,
              x=est.data$x, log.y=est.data$log.y,
              log.yp=est.data$log.yp,
              dlog.yp=est.data$dlog.yp,
@@ -480,18 +590,16 @@ step.b <- moments(sol[1],sol[2:6],s=BLP$share,p=BLP$price,
              zs=est.data$zs,
              W=diag(1,nrow=(ncol(est.data$zd)+ncol(est.data$zs))),
              # W = opt.weight,
-             market.id=BLP$cdid, firm.id=BLP$firm.id,compute.variance = TRUE)
+             market.id=BLP$cdid, firm.id=BLP$firm.id,var=var)
+
+sd <- matrix(c(sqrt(diag(alpha.sigma.var)),sqrt(diag(var))),nc=1) #Calculate standard error
+rownames(sd) <- c("alpha",paste("sigma",c("constant","hpwt","air","mpd","space"),sep = "."),paste("beta",c("constant","hpwt","air","mpd","space"),sep = "."),paste("gamma",c("constant","hpwt","air","mpd","space","trend"),sep = "."))
 
 
+est.result.1 <- matrix(c( step.a$solution[1], step.a$solution[2:6],  step.b$beta,  step.b$gamma),nc=1)
+rownames(est.result.1) <- c("alpha",paste("sigma",c("constant","hpwt","air","mpd","space"),sep = "."),paste("beta",c("constant","hpwt","air","mpd","space"),sep = "."),paste("gamma",c("constant","hpwt","air","mpd","space","trend"),sep = "."))
 
-est.result.2 <- matrix(c( step.a$solution[1], step.a$solution[2:6],  step.b$beta,  step.b$gamma),nc=1)
-rownames(est.result.2) <- c("alpha",paste("sigma",c("constant","hpwt","air","mpd","space"),sep = "."),paste("beta",c("constant","hpwt","air","mpd","space"),sep = "."),paste("gamma",c("constant","hpwt","air","mpd","space","trend"),sep = "."))
-
-stargazer(est.result.2,type="text")
-
-```
-I tried to use weight matrix as the outer product of instruments. However, this result seems to be even worse. The scale of alpha is far away from the estimation.
-## Problem 6:
-```{r Problem 6, echo=FALSE}
-
+result <- cbind(est.result.1,sd)
+colnames(result) <- c("estimate","sd")
+stargazer(result,type="text")
 ```
