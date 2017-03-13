@@ -175,8 +175,8 @@ delta.fn <- function(s,x,log.y,log.yp,v,alpha,sigma,
   return(delta.new)
 }
 ```
-The test code for share.fn and delta.fn.
-```{r Problem 2 Test, echo=FALSE,warning=FALSE}
+The test code for share.fn and delta.fn. The result is the distribution of T(delta) - delta, where T is a contraction mapping. It's distribution is quite close to 0, thus the delta function is valid.
+```{r Problem 2 Test, echo=FALSE,warning=FALSE,eval=TRUE}
 #Test code
 Z <- hdm:::constructIV(BLP$firm.id, BLP$cdid, BLP$id,
                        cbind(1,BLP[,c("hpwt","air","mpd","mpg","space","price")]))
@@ -245,7 +245,7 @@ d.check <- delta.fn(s, x=drop(est.data$x[inc,]),
 
 print(summary((abs(delta-d.check))))
 ```
-Check the derivative function is correct.
+Then we need to check the derivative function is correct. The result printed is distribution of difference between numerical derivative and analytical derivate I wrote. Observing that the derivative is quite close to 0, then the function is likely to be correctly written.
 ```{r Problem 2, echo=FALSE,warning=FALSE}
 dshare.dp <- function(delta,x,log.y, log.yp, dlog.yp, v,alpha,sigma)
 {
@@ -365,7 +365,7 @@ Rprof(NULL) # stop the profiler
 
 summaryRprof("blp.prof", lines="both") # show the results
 ```
-The inline functions and apply procedure takes most of the time. Share.fun first record all the values for each y draw, then take average. This apply function takes a lot of time, so instead of recording every draw of y, I sum up the share, and devide by S at the end. This is a similar case in function dshare.dp. The time is shortened by 90%. However, on the cost side, the parameters does not agree with the paper in sign. I doubt it is due to the construction of IV is not completely valid.
+The inline functions and "apply"" procedure takes most of the time. Share.fun first record all the values for each y draw, then take average. This apply function takes a lot of time, so instead of recording every draw of y, I sum up the share, and devide by S at the end. This is a similar case in function dshare.dp. The time is shortened by 90%. However, on the cost side, the parameters does not agree with the paper in sign. I doubt it is due to the construction of IV is not completely valid. 
 ```{r redundent, echo=FALSE, eval=FALSE}
 alpha = est.blp$alpha
 sigma = est.blp$sigma
@@ -431,7 +431,7 @@ obj.func <- function(alpha.sigma) { m <-moments(alpha.sigma[1],alpha.sigma[2:6],
 
 x0 <- c(est.blp$alpha,est.blp$sigma)
 obj.func(c(est.blp$alpha,est.blp$sigma))
-step.a <- nloptr(x0=x0 ,eval_f = obj.func, lb = x0 * 0.1 , opts=list(algorithm="NLOPT_LN_BOBYQA",print_level=3,tol=1e-2))
+step.a <- nloptr(x0=x0 ,eval_f = obj.func, lb = x0 * 0.1 , opts=list(algorithm="NLOPT_LN_BOBYQA",tol=1e-2))
 sol <- step.a$solution
 step.b <- moments(sol[1],sol[2:6],s=BLP$share,p=BLP$price,
              x=est.data$x, log.y=est.data$log.y,
@@ -450,7 +450,7 @@ rownames(est.result.2) <- c("alpha",paste("sigma",c("constant","hpwt","air","mpd
 stargazer(est.result.2,type="text")
 
 ```
-I tried to use weight matrix as the outer product of instruments. However, this result seems to be even worse. The scale of alpha is far away from the estimation.
+I tried to use weight matrix as the inverse of outer product of instruments. However, this result seems to be even worse. The scale of alpha is far away from the estimation.
 
 ```{r, echo=FALSE,eval=TRUE}
 obj.func <- function(alpha.sigma) {  m<-moments(alpha.sigma[1],alpha.sigma[2:6],s=BLP$share,p=BLP$price,
@@ -492,6 +492,53 @@ stargazer(est.result.1,type="text")
 ```
 Compare to table IV in the BLP paper, the sign mostly agrees for beta. This implies that the demand side is correctly estimated. However, the supply side is not similar to the paper. The signs of gamma does not aggree.
 
+```{r table VI, echo=FALSE}
+alpha = est.blp$alpha
+sigma = est.blp$sigma
+s = BLP$share
+p = BLP$price
+x=est.data$x
+w=est.data$w
+log.y=est.data$log.y           
+log.yp=est.data$log.yp
+dlog.yp=est.data$dlog.yp             
+v=v.s
+# w=est.data$w
+zd=est.data$zd
+zs=est.data$zs
+inc <- BLP$cdid == 20 #Use 1990 data to produce table VI
+
+brand.list <- c("MZ323 ","NISENT","FDESCO","CVCAVA","HDACCO",
+                "BKCENT","NIMAXI","ACLEGE","LNTOWN","CDSEVI", "LXLS40","BW735i")
+
+matrix.inc <- c()
+els.data <- subset(BLP,cdid==20)
+
+for (each in brand.list){
+    matrix.inc <- append(matrix.inc, which(els.data$model.name == each) )
+}
+
+t = 20
+els.delta <-  delta.fn(s[inc], x[inc,],drop(log.y[t,]),
+                           log.yp[[t]] ,
+                           v=drop(v.s[t,,]),
+                           alpha,sigma, tol=1e-2,
+                           tol.s=1e-6, max.iter=1000)
+    
+els.dShare <- dshare.dp(els.delta, x[inc,], drop(log.y[t,]),
+                        log.yp[[t]], dlog.yp[[t]] , drop(v[t,,]), alpha,sigma)
+
+els.dShare <- els.dShare[matrix.inc,matrix.inc]
+els.dShare <- apply(els.dShare,2, function(x){ x  * els.data$price[matrix.inc]})
+els.dShare <- apply(els.dShare,1, function(x){ x  / els.data$share[matrix.inc]})
+
+els.table <- els.dShare
+colnames(els.table) <- brand.list
+rownames(els.table) <- brand.list
+stargazer(els.table,type="text")
+
+```
+I think the result is a bit different than the paper's table VI. In the paper, the elasticity with own price is lowest for BW735i. However, this is against intuition, because among all the models, BW735i has the highest price. It's elasticity should have the largest magnitude.
 
 ## Problem 6:
 
@@ -560,19 +607,23 @@ alpha.sigma.variance <- function(alpha,sigma, s,p,x,log.yp, log.y,dlog.yp,
     omega[inc] <- log(p[inc]-b)
     for (k in 1:(dim(x)[2]+1)){
       each.dr <- diag(delta.derivative[inc,k])
-      # omega.derivative[inc,k] <- diag(as.vector(1 / (p[inc]-b)))  %*% trans %*% each.dr %*% dShare %*% t(trans) %*% s[inc]
-      omega.derivative[inc,k] <- diag(as.vector(1 / (p[inc]-b)))  %*% each.dr %*% dShare %*% s[inc]
+      omega.derivative[inc,k] <- diag(as.vector(1 / (p[inc]-b)))  %*% trans %*% each.dr %*% dShare %*% t(trans) %*% s[inc]
+      # omega.derivative[inc,k] <- diag(as.vector(1 / (p[inc]-b)))  %*% each.dr %*% dShare %*% s[inc]
     }
 
   }
     B.dr <- rbind(delta.derivative,omega.derivative)
+    
     X <- as.matrix(rbind(cbind(x,0*w), cbind(0*x,w)))
     Y <- c(delta, omega)
     Z <- as.matrix(rbind(cbind(zd,0*zs), cbind(0*zd, zs)))
     XZ <- t(X) %*% Z 
     M.B <- solve(XZ %*% W %*% t(XZ)) %*%
     (XZ  %*% W %*% t(Z))
-    alpha.sigma.var <- t(M.B %*% B.dr) %*% var %*% (M.B %*% B.dr)
+    
+    B.B <- solve( t(M.B %*% B.dr) %*%  (M.B %*% B.dr))
+    
+    list(alpha.sigma.var = alpha.sigma.var <-   t(M.B %*% B.dr) %*% var %*% (M.B %*% B.dr), B.dr  = B.dr)
   
 }
 
@@ -592,7 +643,7 @@ alpha.sigma.var <- alpha.sigma.variance(sol[1],sol[2:6],s=BLP$share,p=BLP$price,
              # W = opt.weight,
              market.id=BLP$cdid, firm.id=BLP$firm.id,var=var)
 
-sd <- matrix(c(sqrt(diag(alpha.sigma.var)),sqrt(diag(var))),nc=1) #Calculate standard error
+sd <- matrix(c(sqrt(diag(alpha.sigma.var$alpha.sigma.var)),sqrt(diag(var))),nc=1) #Calculate standard error
 rownames(sd) <- c("alpha",paste("sigma",c("constant","hpwt","air","mpd","space"),sep = "."),paste("beta",c("constant","hpwt","air","mpd","space"),sep = "."),paste("gamma",c("constant","hpwt","air","mpd","space","trend"),sep = "."))
 
 
